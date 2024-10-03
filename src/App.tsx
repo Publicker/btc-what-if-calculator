@@ -359,6 +359,7 @@ function App() {
 												type="range"
 												value={date}
 												onChange={setDate}
+												minDate={new Date(2021, 0, 1)}
 												maxDate={maxDate}
 											/>
 										</Popover.Dropdown>
