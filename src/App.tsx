@@ -5,9 +5,13 @@ import {
 	format,
 	getDay,
 	getDate,
-	endOfDay,
-	startOfDay,
 	parseISO,
+	isAfter,
+	isBefore,
+	addDays,
+	startOfDay,
+	endOfDay,
+	isToday,
 } from "date-fns";
 import { DatePicker } from "@mantine/dates";
 import { Tabs, Popover, TextInput, Text, Button, Stack } from "@mantine/core";
@@ -40,7 +44,6 @@ import type {
 	CalculatorResult,
 	CompoundInterestResult,
 	HistoricalDataPoint,
-	HistoricalDataResponse,
 	HistoricalBar,
 } from "./types";
 import type {
@@ -48,7 +51,7 @@ import type {
 	ValueType,
 } from "recharts/types/component/DefaultTooltipContent";
 
-type FetchDataCallback = (bars: HistoricalBar[]) => void;
+const minDate = new Date(2009, 0, 3); // Bitcoin's genesis block date
 
 function App() {
 	const [date, setDate] = useState<[Date | null, Date | null]>([null, null]);
@@ -88,13 +91,16 @@ function App() {
 		}
 
 		try {
-			await fetchAlpacaData(date[0], date[1], (bars) => {
+			await fetchBlockchairData(date[0], date[1], (bars) => {
 				if (bars.length < 2) {
 					throw new Error("Not enough data for the selected date range");
 				}
 
 				const buyBar = bars[0];
 				const sellBar = bars[bars.length - 1];
+
+				const buyDate = new Date(buyBar.t);
+				const sellDate = new Date(sellBar.t);
 
 				const buyRate = buyBar.c;
 				const sellRate = sellBar.c;
@@ -107,10 +113,10 @@ function App() {
 
 				setResult({
 					initialPurchase,
-					buyDate: format(parseISO(buyBar.t), "MMM dd, yyyy"),
+					buyDate: format(buyDate, "MMM dd, yyyy"),
 					buyRate,
 					btcAmount,
-					sellDate: format(parseISO(sellBar.t), "MMM dd, yyyy"),
+					sellDate: format(sellDate, "MMM dd, yyyy"),
 					sellRate,
 					finalValue,
 					profitLoss,
@@ -152,31 +158,90 @@ function App() {
 		}
 	};
 
-	const fetchAlpacaData = async (
+	const fetchBlockchairData = async (
 		startDate: Date,
 		endDate: Date,
-		callback: FetchDataCallback,
+		callback: (bars: HistoricalBar[]) => void,
 	) => {
 		try {
-			const response = await axios.get<HistoricalDataResponse>(
-				"https://data.alpaca.markets/v1beta3/crypto/us/bars",
+			const formatDateUTC = (date: Date) => {
+				const pad = (n: number) => n.toString().padStart(2, "0");
+				return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(
+					date.getUTCDate(),
+				)}`;
+			};
+
+			// Adjust the end date by adding one day
+			const adjustedStart = addDays(startOfDay(startDate), -1);
+			const adjustedEndDate = addDays(endOfDay(endDate), 1);
+
+			const startDateString = formatDateUTC(adjustedStart);
+			const endDateString = formatDateUTC(adjustedEndDate);
+
+			const constructors = [
 				{
-					params: {
-						symbols: "BTC/USD",
-						timeframe: "1D",
-						start: startOfDay(startDate).toISOString(),
-						end: endOfDay(endDate).toISOString(),
-						limit: 1000,
-						sort: "asc",
-					},
+					selectedChain: "bitcoin",
+					selectedTable: "blocks",
+					selectedAggregationField: "price",
+					selectedAggregationFieldValue: { price: "price(btc_usd)" },
+					selectedFilterFields: [],
+					selectedFilterFieldsOrder: [],
+					selectedFilterFieldsValues: {},
+				},
+			];
+
+			const globals = {
+				selectedGlobalGroupField: "time",
+				selectedGlobalGroupTime: "date",
+				selectedGlobalGroupTimeCustom: `time(${startDateString}..${endDateString})`,
+				selectedChartType: "line",
+			};
+
+			const params = {
+				"constructors[]": JSON.stringify(constructors[0]),
+				globals: JSON.stringify(globals),
+			};
+
+			const response = await axios.get(
+				"https://blockchair.com/_api/charts/data",
+				{
+					params,
 					headers: {
 						accept: "application/json",
 					},
 				},
 			);
 
-			const bars = response.data.bars["BTC/USD"];
-			callback(bars);
+			const data = response.data.data[0];
+
+			// Map data to bars
+			const bars: HistoricalBar[] = data.map(
+				([timestamp, price]: [number, number]) => {
+					return {
+						t: new Date(timestamp * 1000).toISOString(), // Convert timestamp to ISO string
+						c: price,
+					};
+				},
+			);
+
+			// API doesn't return today's info, so we add it manually
+			if (isToday(endDate)) {
+				bars.push({
+					t: new Date().toISOString(),
+					c: bars[bars.length - 1].c,
+				});
+			}
+
+			const filteredBars = bars.filter((bar) => {
+				const localBarDate = new Date(parseISO(bar.t));
+
+				return (
+					isAfter(localBarDate, startOfDay(startDate)) &&
+					isBefore(localBarDate, endOfDay(endDate))
+				);
+			});
+
+			callback(filteredBars);
 		} catch (error) {
 			console.error(error);
 			alert("Error fetching data. Please try again.");
@@ -184,18 +249,17 @@ function App() {
 	};
 
 	const fetchHistoricalData = async (startDate: Date, endDate: Date) => {
-		await fetchAlpacaData(startDate, endDate, (bars) => {
+		await fetchBlockchairData(startDate, endDate, (bars) => {
 			const initialPrice = bars[0].c;
-			const data: HistoricalDataPoint[] = bars.map((bar) => ({
-				date: bar.t,
-				close: bar.c,
-				high: bar.h,
-				low: bar.l,
-				open: bar.o,
-				volume: bar.v,
-				vwap: bar.vw,
-				return: ((bar.c - initialPrice) / initialPrice) * 100,
-			}));
+			const data: HistoricalDataPoint[] = bars.map((bar) => {
+				const date = new Date(bar.t);
+
+				return {
+					date: date.toISOString(),
+					close: bar.c,
+					return: ((bar.c - initialPrice) / initialPrice) * 100,
+				};
+			});
 			setHistoricalData(data);
 		});
 	};
@@ -229,7 +293,7 @@ function App() {
 		let btcAmount = 0;
 		const historicalData: HistoricalDataPoint[] = [];
 
-		await fetchAlpacaData(compoundStartDate, compoundEndDate, (bars) => {
+		await fetchBlockchairData(compoundStartDate, compoundEndDate, (bars) => {
 			let cumulativeProfitLoss = 0;
 
 			for (const bar of bars) {
@@ -256,11 +320,6 @@ function App() {
 				historicalData.push({
 					date: bar.t,
 					close: bar.c,
-					high: bar.h,
-					low: bar.l,
-					open: bar.o,
-					volume: bar.v,
-					vwap: bar.vw,
 					btcAmount: btcAmount,
 					purchase: totalInvested,
 					dailyPurchase,
@@ -359,7 +418,7 @@ function App() {
 												type="range"
 												value={date}
 												onChange={setDate}
-												minDate={new Date(2021, 0, 1)}
+												minDate={minDate}
 												maxDate={maxDate}
 											/>
 										</Popover.Dropdown>
@@ -487,6 +546,7 @@ function App() {
 									<DatePicker
 										value={historicalStartDate}
 										onChange={handleHistoricalDateChange}
+										minDate={minDate}
 										maxDate={maxDate}
 									/>
 								</Popover.Dropdown>
@@ -564,6 +624,7 @@ function App() {
 												setCompoundStartDate(start);
 												setCompoundEndDate(end);
 											}}
+											minDate={minDate}
 											maxDate={new Date()}
 										/>
 									</Popover.Dropdown>

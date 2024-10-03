@@ -13,11 +13,6 @@ export interface CalculatorResult {
 export interface HistoricalDataPoint {
 	date: string;
 	close: number;
-	high: number;
-	low: number;
-	open: number;
-	volume: number;
-	vwap: number;
 	return?: number;
 	btcAmount?: number;
 	purchase?: number;
@@ -55,17 +50,9 @@ export interface TimeSeriesResponse {
 	};
 }
 
-// Add these new types for the historical data response:
-
 export interface HistoricalBar {
+	t: string; // timestamp as ISO string
 	c: number; // close price
-	h: number; // high price
-	l: number; // low price
-	n: number; // number of trades
-	o: number; // open price
-	t: string; // timestamp
-	v: number; // volume
-	vw: number; // volume weighted average price
 }
 
 export interface HistoricalDataResponse {
